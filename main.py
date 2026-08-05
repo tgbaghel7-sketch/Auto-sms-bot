@@ -15,11 +15,7 @@ from handlers.firebase_handler import (
     WAIT_NAME, WAIT_URL_PUBLIC, WAIT_SA_JSON, WAIT_SA_URL,
     WAIT_SECRET_URL, WAIT_SECRET_KEY,
 )
-from handlers.devices_handler import (
-    devices_menu, devices_callback,
-    receive_add_device, receive_remove_device,
-    WAITING_ADD, WAITING_REMOVE,
-)
+from handlers.devices_handler import devices_menu, devices_callback
 from handlers.channel_handler import (
     channel_menu, channel_callback, receive_channel, WAITING_CHANNEL,
 )
@@ -92,17 +88,6 @@ def main():
         allow_reentry=True,
     )
 
-    # ── Devices conversation ──
-    devices_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(devices_callback, pattern="^dev_")],
-        states={
-            WAITING_ADD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_add_device)],
-            WAITING_REMOVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_remove_device)],
-        },
-        fallbacks=[CallbackQueryHandler(back_to_main, pattern="^back_main$")],
-        allow_reentry=True,
-    )
-
     # ── Channel conversation ──
     channel_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(channel_callback, pattern="^ch_add$")],
@@ -140,11 +125,13 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^⏹ Stop Forwarding$"), stop_forwarding))
 
     app.add_handler(fb_add_conv)
-    app.add_handler(devices_conv)
     app.add_handler(channel_conv)
     app.add_handler(filters_conv)
 
-    # Remaining firebase / channel callbacks (list, select, delete, menu)
+    # Device callbacks (all button-based now)
+    app.add_handler(CallbackQueryHandler(devices_callback, pattern="^dev_"))
+
+    # Remaining firebase / channel callbacks
     app.add_handler(CallbackQueryHandler(fb_callback, pattern="^fb_"))
     app.add_handler(CallbackQueryHandler(channel_callback, pattern="^ch_"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_main$"))

@@ -1,5 +1,5 @@
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 from models import SessionLocal, get_or_create_user, FirebaseAccount, mark_json_dirty
 from utils.firebase_manager import firebase_manager
@@ -7,14 +7,13 @@ from keyboards import devices_menu_keyboard, main_menu_keyboard, back_main_keybo
 
 logger = logging.getLogger(__name__)
 
-WAITING_ADD, WAITING_REMOVE = range(2)
-
 
 async def devices_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show device menu. Prefer auto-fetch from Firebase."""
     await update.message.reply_text(
         "📱 <b>Device</b>\n\n"
-        "Devices are read from the <b>active</b> Firebase:\n"
-        "<code>/devices/{deviceId}/sms/...</code>",
+        "Tap <b>Select Devices</b> to load all devices from your active Firebase "
+        "and choose which ones to monitor.",
         parse_mode="HTML",
         reply_markup=devices_menu_keyboard(),
     )
@@ -29,92 +28,144 @@ async def devices_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = get_or_create_user(session, update.effective_user.id)
 
-        if data == "dev_list":
+        # ── Select / refresh device list from Firebase ──
+        if data in ("dev_select", "dev_list", "dev_refresh"):
             if not user.active_firebase_id:
                 await query.edit_message_text(
-                    "❌ Select a Firebase first.", reply_markup=back_main_keyboard()
+                    "❌ Select a Firebase first (Manage Firebase → Select).",
+                    reply_markup=back_main_keyboard(),
                 )
-                return
-            fb = session.query(FirebaseAccount).filter(
-                FirebaseAccount.id == user.active_firebase_id
-            ).first()
+                return ConversationHandler.END
+
+            fb = (
+                session.query(FirebaseAccount)
+                .filter(FirebaseAccount.id == user.active_firebase_id)
+                .first()
+            )
             if not fb:
                 await query.edit_message_text(
-                    "❌ Active Firebase not found.", reply_markup=back_main_keyboard()
+                    "❌ Active Firebase not found.",
+                    reply_markup=back_main_keyboard(),
                 )
-                return
+                return ConversationHandler.END
+
+            await query.edit_message_text("⏳ Loading devices from Firebase…")
+
             devices = firebase_manager.list_devices(fb)
             selected = set(user.selected_devices or [])
+
             if not devices:
-                text = "No devices found under <code>/devices</code>."
+                await query.edit_message_text(
+                    "No devices found under <code>/devices</code>.\n\n"
+                    "Make sure your Firebase has data at:\n"
+                    "<code>/devices/{deviceId}/sms/...</code>",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Refresh", callback_data="dev_refresh")],
+                        [InlineKeyboardButton("🔙 Back", callback_data="back_main")],
+                    ]),
+                )
+                return ConversationHandler.END
+
+            # Build toggle buttons
+            buttons = []
+            for d in devices:
+                mark = "✅" if d in selected else "⬜"
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{mark} {d}",
+                        callback_data=f"dev_toggle_{d}",
+                    )
+                ])
+            buttons.append([
+                InlineKeyboardButton("🔄 Refresh", callback_data="dev_refresh"),
+                InlineKeyboardButton("✅ Done", callback_data="dev_done"),
+            ])
+            buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_main")])
+
+            selected_count = len(selected)
+            await query.edit_message_text(
+                f"📱 <b>Select devices to monitor</b>\n\n"
+                f"Firebase: <b>{fb.name}</b>\n"
+                f"Selected: {selected_count}\n\n"
+                f"Tap a device to select / deselect:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            return ConversationHandler.END
+
+        # ── Toggle one device ──
+        if data.startswith("dev_toggle_"):
+            device_id = data[len("dev_toggle_"):]
+            devices = list(user.selected_devices or [])
+            if device_id in devices:
+                devices.remove(device_id)
             else:
-                lines = [
-                    f"{'✅' if d in selected else '⬜'} <code>{d}</code>"
-                    for d in devices
-                ]
-                text = "📋 <b>Devices:</b>\n\n" + "\n".join(lines)
-            await query.edit_message_text(
-                text, parse_mode="HTML", reply_markup=back_main_keyboard()
-            )
-            return
-
-        if data == "dev_add":
-            await query.edit_message_text(
-                "Send the <b>device ID</b> to add:",
-                parse_mode="HTML",
-                reply_markup=back_main_keyboard(),
-            )
-            return WAITING_ADD
-
-        if data == "dev_remove":
-            await query.edit_message_text(
-                "Send the <b>device ID</b> to remove:",
-                parse_mode="HTML",
-                reply_markup=back_main_keyboard(),
-            )
-            return WAITING_REMOVE
-    finally:
-        session.close()
-    return ConversationHandler.END
-
-
-async def receive_add_device(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    device_id = update.message.text.strip()
-    session = SessionLocal()
-    try:
-        user = get_or_create_user(session, update.effective_user.id)
-        devices = list(user.selected_devices or [])
-        if device_id not in devices:
-            devices.append(device_id)
+                devices.append(device_id)
             user.selected_devices = devices
             mark_json_dirty(user, "selected_devices")
             session.commit()
-        await update.message.reply_text(
-            f"✅ Device <code>{device_id}</code> added.",
-            parse_mode="HTML",
-            reply_markup=main_menu_keyboard(user.is_monitoring),
-        )
-    finally:
-        session.close()
-    return ConversationHandler.END
 
+            # Re-render the list
+            fb = (
+                session.query(FirebaseAccount)
+                .filter(FirebaseAccount.id == user.active_firebase_id)
+                .first()
+            )
+            all_devices = firebase_manager.list_devices(fb) if fb else devices
+            selected = set(devices)
 
-async def receive_remove_device(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    device_id = update.message.text.strip()
-    session = SessionLocal()
-    try:
-        user = get_or_create_user(session, update.effective_user.id)
-        devices = list(user.selected_devices or [])
-        if device_id in devices:
-            devices.remove(device_id)
-            user.selected_devices = devices
+            buttons = []
+            for d in all_devices:
+                mark = "✅" if d in selected else "⬜"
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{mark} {d}",
+                        callback_data=f"dev_toggle_{d}",
+                    )
+                ])
+            buttons.append([
+                InlineKeyboardButton("🔄 Refresh", callback_data="dev_refresh"),
+                InlineKeyboardButton("✅ Done", callback_data="dev_done"),
+            ])
+            buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_main")])
+
+            await query.edit_message_text(
+                f"📱 <b>Select devices to monitor</b>\n\n"
+                f"Firebase: <b>{fb.name if fb else '?'}</b>\n"
+                f"Selected: {len(selected)}\n\n"
+                f"Tap a device to select / deselect:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            return ConversationHandler.END
+
+        # ── Done ──
+        if data == "dev_done":
+            selected = user.selected_devices or []
+            text = (
+                f"✅ Devices updated.\n"
+                f"Monitoring: <code>{', '.join(selected) if selected else 'None'}</code>"
+            )
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=back_main_keyboard(),
+            )
+            return ConversationHandler.END
+
+        # ── Clear all selected ──
+        if data == "dev_clear":
+            user.selected_devices = []
             mark_json_dirty(user, "selected_devices")
             session.commit()
-        await update.message.reply_text(
-            f"🗑 Device <code>{device_id}</code> removed.",
-            parse_mode="HTML",
-            reply_markup=main_menu_keyboard(user.is_monitoring),
-        )
+            await query.edit_message_text(
+                "🗑 All selected devices cleared.",
+                reply_markup=devices_menu_keyboard(),
+            )
+            return ConversationHandler.END
+
     finally:
         session.close()
+
     return ConversationHandler.END

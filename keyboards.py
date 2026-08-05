@@ -34,9 +34,9 @@ def firebase_type_keyboard() -> InlineKeyboardMarkup:
 
 def devices_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Device", callback_data="dev_add")],
-        [InlineKeyboardButton("🗑 Remove Device", callback_data="dev_remove")],
-        [InlineKeyboardButton("📋 List Devices", callback_data="dev_list")],
+        [InlineKeyboardButton("📱 Select Devices", callback_data="dev_select")],
+        [InlineKeyboardButton("🔄 Refresh from Firebase", callback_data="dev_refresh")],
+        [InlineKeyboardButton("🗑 Clear Selected", callback_data="dev_clear")],
         [InlineKeyboardButton("🔙 Back", callback_data="back_main")],
     ])
 
